@@ -3,13 +3,18 @@ from __future__ import annotations
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from engine.measurements.models import MeasurementProfile
 
 from ..db.session import get_session
+from ..db.models import User
 from ..services.pattern_service import PatternService
+from ..auth.models import Token
+from ..auth.security import verify_password, create_access_token
+from ..settings import settings
 
 
 router = APIRouter()
@@ -33,6 +38,36 @@ class PatternGenerationRequestModel(BaseModel):
     rule_graph_id: str
     rule_graph_version: str
     debug: bool = False
+
+
+@router.post("/auth/login", response_model=Token)
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> Token:
+    result = await session.execute(
+        User.__table__.select().where(User.email == form_data.username)
+    )
+    row = result.first()
+    if not row:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    user = User(**row._mapping)
+    if not verify_password(form_data.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token = create_access_token(
+        subject=user.email,
+        is_admin=user.is_admin,
+        secret_key=settings.jwt_secret_key,
+    )
+    return Token(access_token=access_token)
 
 
 @router.post("/patterns/generate", status_code=status.HTTP_202_ACCEPTED)

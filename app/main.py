@@ -2,12 +2,57 @@ from __future__ import annotations
 
 from fastapi import Depends, FastAPI
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqladmin import Admin
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from .api.v1 import router as api_v1_router
-from .db.session import get_session
+from .db.session import get_session, engine
+from .admin.views import (
+    UserAdmin,
+    OrganizationAdmin,
+    OrganizationMemberAdmin,
+    SubscriptionAdmin,
+    ProjectAdmin,
+    PatternAdmin,
+    PatternResultAdmin,
+    DraftingSchoolAdmin,
+    BlockConfigAdmin,
+    RuleGraphConfigAdmin,
+    TransformPipelineConfigAdmin,
+    SizeProfileConfigAdmin,
+    EaseProfileConfigAdmin,
+    SeamAllowanceProfileConfigAdmin,
+    ConfigAuditLogAdmin,
+)
+from .logging_config import configure_logging
 
 
-app = FastAPI(title="Garment Pattern Backend", version="0.1.0")
+configure_logging()
+
+app = FastAPI(
+    title="Garment Pattern Backend",
+    version="0.1.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+)
+
+admin = Admin(app, engine.sync_engine)
+admin.add_view(UserAdmin)
+admin.add_view(OrganizationAdmin)
+admin.add_view(OrganizationMemberAdmin)
+admin.add_view(SubscriptionAdmin)
+admin.add_view(ProjectAdmin)
+admin.add_view(PatternAdmin)
+admin.add_view(PatternResultAdmin)
+admin.add_view(DraftingSchoolAdmin)
+admin.add_view(BlockConfigAdmin)
+admin.add_view(RuleGraphConfigAdmin)
+admin.add_view(TransformPipelineConfigAdmin)
+admin.add_view(SizeProfileConfigAdmin)
+admin.add_view(EaseProfileConfigAdmin)
+admin.add_view(SeamAllowanceProfileConfigAdmin)
+admin.add_view(ConfigAuditLogAdmin)
 
 
 @app.get("/health")
@@ -23,6 +68,9 @@ async def ready(session: AsyncSession = Depends(get_session)) -> dict:  # noqa: 
 
 
 app.include_router(api_v1_router, prefix="/v1")
+
+
+Instrumentator().instrument(app).expose(app)
 
 
 
