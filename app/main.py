@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +11,7 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from .api.v1 import router as api_v1_router
 from .db.session import get_session, engine
+from .db.models import Base
 from .admin.views import (
     UserAdmin,
     OrganizationAdmin,
@@ -29,6 +33,7 @@ from .logging_config import configure_logging
 
 
 configure_logging()
+logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="Garment Pattern Backend",
@@ -46,6 +51,36 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    """
+    Development convenience: ensure all SQLAlchemy models have tables.
+
+    In production you'd typically run migrations instead of this.
+    Includes simple retry logic so Postgres inside Docker has time to start.
+    """
+    max_attempts = 10
+    delay_seconds = 2
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            logger.info("Database tables created/verified.")
+            break
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "DB init attempt %s/%s failed: %s",
+                attempt,
+                max_attempts,
+                exc,
+            )
+            if attempt == max_attempts:
+                logger.error("Giving up on DB init; API may fail if DB is unavailable.")
+                break
+            await asyncio.sleep(delay_seconds)
 
 admin = Admin(app, engine.sync_engine)
 admin.add_view(UserAdmin)
