@@ -35,6 +35,10 @@ class User(Base):
     )
 
     subscriptions: Mapped[list["Subscription"]] = relationship(back_populates="user")
+    measurement_profiles: Mapped[list["MeasurementProfile"]] = relationship(
+        back_populates="owner_user"
+    )
+    projects: Mapped[list["Project"]] = relationship(back_populates="owner_user")
 
 
 class Organization(Base):
@@ -84,6 +88,32 @@ class Project(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow
     )
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="active"
+    )  # active, archived
+
+    owner_user: Mapped[Optional[User]] = relationship(back_populates="projects")
+
+
+class MeasurementProfile(Base):
+    __tablename__ = "measurement_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    category: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="womenswear"
+    )  # womenswear, menswear, childrenswear, etc.
+    unit: Mapped[str] = mapped_column(String(16), nullable=False, default="mm")
+    values_jsonb: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+    owner_user: Mapped[User] = relationship(back_populates="measurement_profiles")
 
 
 class Pattern(Base):
