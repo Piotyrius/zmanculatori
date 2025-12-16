@@ -58,3 +58,4 @@ class PatternService:
         return result
 
 
+

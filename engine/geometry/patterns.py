@@ -41,3 +41,4 @@ class PatternGeometry:
     metadata: Dict[str, object] = field(default_factory=dict)
 
 
+
