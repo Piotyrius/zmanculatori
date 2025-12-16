@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -31,6 +31,7 @@ from ..db.models import (
     Subscription,
     Organization,
     OrganizationMember,
+    ApiToken,
 )
 from ..services.pattern_service import PatternService
 from ..auth.models import Token
@@ -131,6 +132,13 @@ class SizeProfileResponse(BaseModel):
 
 
 class TransformPipelineResponse(BaseModel):
+    id: int
+    name: str
+    version: str
+    config: Dict[str, Any]
+
+
+class RuleGraphResponse(BaseModel):
     id: int
     name: str
     version: str
@@ -615,6 +623,25 @@ async def list_transform_pipelines(
     ]
 
 
+@router.get("/configs/rule-graphs", response_model=List[RuleGraphResponse])
+async def list_rule_graphs(
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> List[RuleGraphResponse]:
+    """List available rule graph configurations."""
+    result = await session.execute(select(RuleGraphConfigModel))
+    graphs = result.scalars().all()
+    return [
+        RuleGraphResponse(
+            id=g.id,
+            name=g.name,
+            version=g.version,
+            config=g.config_jsonb,
+        )
+        for g in graphs
+    ]
+
+
 @router.get("/projects/{project_id}/patterns", response_model=List[Dict[str, Any]])
 async def list_project_patterns(
     project_id: int,
@@ -662,6 +689,90 @@ async def list_project_patterns(
         })
     
     return result_list
+
+
+@router.get("/patterns/{pattern_id}/diff/{other_pattern_id}", response_model=Dict[str, Any])
+async def compare_pattern_versions(
+    pattern_id: int,
+    other_pattern_id: int,
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> Dict[str, Any]:
+    """Compare two pattern versions and return differences in their config bundles."""
+    # Verify both patterns belong to user's projects
+    patterns_result = await session.execute(
+        select(Pattern)
+        .join(Project)
+        .where(
+            Pattern.id.in_([pattern_id, other_pattern_id]),
+            Project.owner_user_id == current_user.id,
+        )
+    )
+    patterns = {p.id: p for p in patterns_result.scalars().all()}
+    
+    if pattern_id not in patterns or other_pattern_id not in patterns:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="One or both patterns not found"
+        )
+    
+    pattern1 = patterns[pattern_id]
+    pattern2 = patterns[other_pattern_id]
+    
+    # Compare config bundles
+    config1 = pattern1.config_version_bundle_jsonb
+    config2 = pattern2.config_version_bundle_jsonb
+    
+    def deep_diff(d1: Dict[str, Any], d2: Dict[str, Any], path: str = "") -> List[Dict[str, Any]]:
+        """Recursively find differences between two dictionaries."""
+        diffs = []
+        all_keys = set(d1.keys()) | set(d2.keys())
+        
+        for key in all_keys:
+            current_path = f"{path}.{key}" if path else key
+            val1 = d1.get(key)
+            val2 = d2.get(key)
+            
+            if key not in d1:
+                diffs.append({
+                    "path": current_path,
+                    "type": "added",
+                    "old_value": None,
+                    "new_value": val2,
+                })
+            elif key not in d2:
+                diffs.append({
+                    "path": current_path,
+                    "type": "removed",
+                    "old_value": val1,
+                    "new_value": None,
+                })
+            elif isinstance(val1, dict) and isinstance(val2, dict):
+                diffs.extend(deep_diff(val1, val2, current_path))
+            elif val1 != val2:
+                diffs.append({
+                    "path": current_path,
+                    "type": "changed",
+                    "old_value": val1,
+                    "new_value": val2,
+                })
+        
+        return diffs
+    
+    differences = deep_diff(config1, config2)
+    
+    return {
+        "pattern1_id": pattern_id,
+        "pattern1_version": pattern1.version_index,
+        "pattern2_id": other_pattern_id,
+        "pattern2_version": pattern2.version_index,
+        "differences": differences,
+        "summary": {
+            "total_changes": len(differences),
+            "added": len([d for d in differences if d["type"] == "added"]),
+            "removed": len([d for d in differences if d["type"] == "removed"]),
+            "changed": len([d for d in differences if d["type"] == "changed"]),
+        },
+    }
 
 
 @router.post("/patterns/{pattern_id}/restore", response_model=Dict[str, Any])
@@ -994,6 +1105,117 @@ async def invite_to_organization(
         "user_id": member.user_id,
         "role": member.role,
     }
+
+
+class ApiTokenCreateRequest(BaseModel):
+    name: str = Field(..., max_length=255)
+    scopes: List[str] = Field(default_factory=list)
+    expires_in_days: Optional[int] = Field(None, ge=1, le=365)
+
+
+class ApiTokenResponse(BaseModel):
+    id: int
+    name: str
+    scopes: List[str]
+    created_at: str
+    last_used_at: Optional[str]
+    expires_at: Optional[str]
+    is_active: bool
+    token: Optional[str] = None  # Only returned on creation
+
+
+@router.post(
+    "/api-tokens",
+    response_model=ApiTokenResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_api_token(
+    payload: ApiTokenCreateRequest,
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> ApiTokenResponse:
+    """Create a new API token for programmatic access."""
+    import secrets
+    import hashlib
+    
+    # Generate a secure token
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode()).hexdigest()
+    
+    # Calculate expiration
+    expires_at = None
+    if payload.expires_in_days:
+        expires_at = datetime.now(timezone.utc) + timedelta(days=payload.expires_in_days)
+    
+    api_token = ApiToken(
+        user_id=current_user.id,
+        name=payload.name,
+        token_hash=token_hash,
+        scopes_jsonb={"scopes": payload.scopes},
+        expires_at=expires_at,
+        is_active=True,
+    )
+    session.add(api_token)
+    await session.commit()
+    await session.refresh(api_token)
+    
+    return ApiTokenResponse(
+        id=api_token.id,
+        name=api_token.name,
+        scopes=api_token.scopes_jsonb.get("scopes", []),
+        created_at=api_token.created_at.isoformat() if api_token.created_at else "",
+        last_used_at=api_token.last_used_at.isoformat() if api_token.last_used_at else None,
+        expires_at=api_token.expires_at.isoformat() if api_token.expires_at else None,
+        is_active=api_token.is_active,
+        token=raw_token,  # Only returned once on creation
+    )
+
+
+@router.get("/api-tokens", response_model=List[ApiTokenResponse])
+async def list_api_tokens(
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> List[ApiTokenResponse]:
+    """List all API tokens for the current user."""
+    result = await session.execute(
+        select(ApiToken).where(ApiToken.user_id == current_user.id)
+    )
+    tokens = result.scalars().all()
+    return [
+        ApiTokenResponse(
+            id=t.id,
+            name=t.name,
+            scopes=t.scopes_jsonb.get("scopes", []),
+            created_at=t.created_at.isoformat() if t.created_at else "",
+            last_used_at=t.last_used_at.isoformat() if t.last_used_at else None,
+            expires_at=t.expires_at.isoformat() if t.expires_at else None,
+            is_active=t.is_active,
+        )
+        for t in tokens
+    ]
+
+
+@router.delete("/api-tokens/{token_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_api_token(
+    token_id: int,
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> None:
+    """Revoke (delete) an API token."""
+    result = await session.execute(
+        select(ApiToken).where(
+            ApiToken.id == token_id,
+            ApiToken.user_id == current_user.id,
+        )
+    )
+    token = result.scalars().first()
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="API token not found"
+        )
+    
+    await session.delete(token)
+    await session.commit()
 
 
 
