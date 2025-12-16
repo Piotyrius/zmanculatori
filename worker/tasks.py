@@ -26,3 +26,4 @@ def generate_pattern_task(self, pattern_request_payload: Dict[str, Any]) -> Dict
 
 
 
+

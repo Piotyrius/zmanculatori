@@ -23,3 +23,4 @@ celery_app.conf.task_queues = {
 
 
 
+

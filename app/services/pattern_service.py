@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from engine import PatternRequest, generate_pattern, export_pattern
@@ -29,6 +30,14 @@ class PatternService:
         canonical_request_hash: str,
         config_version_bundle: Dict[str, Any],
     ) -> Pattern:
+        # Get next version index for this project
+        max_version_result = await self.session.execute(
+            select(func.max(Pattern.version_index))
+            .where(Pattern.project_id == project_id)
+        )
+        max_version = max_version_result.scalar_one_or_none()
+        next_version = (max_version or 0) + 1
+
         pattern = Pattern(
             project_id=project_id,
             block_type=request.garment_type,
@@ -36,6 +45,7 @@ class PatternService:
             config_version_bundle_jsonb=config_version_bundle,
             canonical_request_hash=canonical_request_hash,
             status="pending",
+            version_index=next_version,
         )
         self.session.add(pattern)
         await self.session.flush()
@@ -56,6 +66,7 @@ class PatternService:
         self.session.add(result)
         await self.session.flush()
         return result
+
 
 
 

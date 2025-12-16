@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import base64
+import logging
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -13,7 +16,22 @@ from engine.measurements.models import MeasurementProfile as EngineMeasurementPr
 from engine.export.models import ExportOptions
 
 from ..db.session import get_session
-from ..db.models import User, Project, MeasurementProfile
+from ..db.models import (
+    User,
+    Project,
+    MeasurementProfile,
+    DraftingSchool,
+    BlockConfig,
+    RuleGraphConfigModel,
+    SizeProfileConfigModel,
+    EaseProfileConfigModel,
+    TransformPipelineConfigModel,
+    Pattern,
+    PatternResult,
+    Subscription,
+    Organization,
+    OrganizationMember,
+)
 from ..services.pattern_service import PatternService
 from ..auth.models import Token
 from ..auth.security import verify_password, hash_password, create_access_token
@@ -22,6 +40,7 @@ from ..settings import settings
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class MeasurementInputModel(BaseModel):
@@ -41,12 +60,15 @@ class PatternGenerationRequestModel(BaseModel):
     block_version: str
     rule_graph_id: str
     rule_graph_version: str
+    size_profile_id: Optional[str] = None
+    ease_profile_id: Optional[str] = None
+    transform_pipeline_ids: List[str] = []
     debug: bool = False
 
 
 class UserCreateRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(min_length=8, max_length=72)
 
 
 class UserProfileResponse(BaseModel):
@@ -77,6 +99,73 @@ class MeasurementProfileResponse(BaseModel):
     category: str
     unit: str
     values: Dict[str, float]
+
+
+class DraftingSchoolResponse(BaseModel):
+    id: int
+    name: str
+    version: str
+    config: Dict[str, Any]
+    is_active: bool
+
+
+class BlockConfigResponse(BaseModel):
+    id: int
+    name: str
+    version: str
+    config: Dict[str, Any]
+
+
+class EaseProfileResponse(BaseModel):
+    id: int
+    name: str
+    version: str
+    config: Dict[str, Any]
+
+
+class SizeProfileResponse(BaseModel):
+    id: int
+    name: str
+    version: str
+    config: Dict[str, Any]
+
+
+class TransformPipelineResponse(BaseModel):
+    id: int
+    name: str
+    version: str
+    config: Dict[str, Any]
+
+
+class PatternResultResponse(BaseModel):
+    id: int
+    pattern_id: int
+    geometry: Optional[Dict[str, Any]] = None
+    exports: Dict[str, Any]
+
+
+class OrganizationCreateRequest(BaseModel):
+    name: str = Field(..., max_length=255)
+
+
+class OrganizationResponse(BaseModel):
+    id: int
+    name: str
+    owner_id: int
+    created_at: str
+
+
+class OrganizationMemberResponse(BaseModel):
+    id: int
+    organization_id: int
+    user_id: int
+    user_email: str
+    role: str
+
+
+class OrganizationInviteRequest(BaseModel):
+    email: EmailStr
+    role: str = Field("member", max_length=64)
 
 
 @router.post("/auth/login", response_model=Token)
@@ -277,6 +366,25 @@ async def list_measurement_profiles(
     ]
 
 
+async def _get_user_tier(
+    user: User, session: AsyncSession
+) -> str:
+    """Get user's subscription tier. Stub to 'pro' for MVP."""
+    # Check for active subscription
+    now = datetime.now(timezone.utc)
+    result = await session.execute(
+        select(Subscription).where(
+            Subscription.user_id == user.id,
+            Subscription.valid_until > now,
+        )
+    )
+    subscription = result.scalars().first()
+    if subscription:
+        return subscription.tier
+    # Default to 'pro' for MVP
+    return "pro"
+
+
 @router.post("/patterns/generate", status_code=status.HTTP_202_ACCEPTED)
 async def generate_pattern_endpoint(
     payload: PatternGenerationRequestModel,
@@ -301,6 +409,11 @@ async def generate_pattern_endpoint(
             status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
         )
 
+    # Check subscription tier (stub to 'pro' for MVP)
+    tier = await _get_user_tier(current_user, session)
+    # For MVP, allow all features for 'pro' tier
+    # In future, validate transform_pipeline_ids and custom profiles based on tier
+
     measurement_profile = EngineMeasurementProfile(
         values=payload.measurements.values,
         unit=payload.measurements.unit,
@@ -317,6 +430,9 @@ async def generate_pattern_endpoint(
         block_version=payload.block_version,
         rule_graph_id=payload.rule_graph_id,
         rule_graph_version=payload.rule_graph_version,
+        size_profile_id=payload.size_profile_id,
+        ease_profile_id=payload.ease_profile_id,
+        transform_pipeline_ids=payload.transform_pipeline_ids,
         debug=payload.debug,
     )
 
@@ -329,6 +445,9 @@ async def generate_pattern_endpoint(
         "block_version": payload.block_version,
         "rule_graph_id": payload.rule_graph_id,
         "rule_graph_version": payload.rule_graph_version,
+        "size_profile_id": payload.size_profile_id,
+        "ease_profile_id": payload.ease_profile_id,
+        "transform_pipeline_ids": payload.transform_pipeline_ids,
     }
 
     service = PatternService(session)
@@ -340,19 +459,49 @@ async def generate_pattern_endpoint(
     )
 
     geometry = generate_pattern(request)
-    export_options = ExportOptions(format="svg")
-    export_bundle = export_pattern(geometry, export_options)
+    
+    # Generate exports in all formats
+    exports_json: Dict[str, Any] = {}
+    
+    # SVG
+    svg_options = ExportOptions(format="svg")
+    svg_bundle = export_pattern(geometry, svg_options)
+    exports_json["svg"] = {
+        "mime_type": svg_bundle.mime_type,
+        "content": svg_bundle.content.decode("utf-8", errors="ignore"),
+        "metadata": svg_bundle.metadata,
+    }
+    
+    # DXF
+    try:
+        dxf_options = ExportOptions(format="dxf")
+        dxf_bundle = export_pattern(geometry, dxf_options)
+        exports_json["dxf"] = {
+            "mime_type": dxf_bundle.mime_type,
+            "content": dxf_bundle.content.decode("utf-8", errors="ignore"),
+            "metadata": dxf_bundle.metadata,
+        }
+    except Exception as e:
+        # Log but don't fail if DXF export fails
+        logger.warning(f"DXF export failed: {e}")
+    
+    # PDF
+    try:
+        pdf_options = ExportOptions(format="pdf", dpi=300)
+        pdf_bundle = export_pattern(geometry, pdf_options)
+        exports_json["pdf"] = {
+            "mime_type": pdf_bundle.mime_type,
+            "content": base64.b64encode(pdf_bundle.content).decode("utf-8"),  # Base64 encode binary PDF
+            "metadata": pdf_bundle.metadata,
+        }
+    except Exception as e:
+        # Log but don't fail if PDF export fails
+        logger.warning(f"PDF export failed: {e}")
 
     result = await service.store_pattern_result(
         pattern=pattern,
         geometry_json={"validation": getattr(geometry, "validation", None)},
-        exports_json={
-            "svg": {
-                "mime_type": export_bundle.mime_type,
-                "content": export_bundle.content.decode("utf-8", errors="ignore"),
-                "metadata": export_bundle.metadata,
-            }
-        },
+        exports_json=exports_json,
     )
 
     await session.commit()
@@ -361,6 +510,489 @@ async def generate_pattern_endpoint(
         "pattern_id": pattern.id,
         "status": pattern.status,
         "result_id": result.id,
+    }
+
+
+@router.get("/configs/drafting-schools", response_model=List[DraftingSchoolResponse])
+async def list_drafting_schools(
+    active_only: bool = True,
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> List[DraftingSchoolResponse]:
+    """List available drafting schools."""
+    query = select(DraftingSchool)
+    if active_only:
+        query = query.where(DraftingSchool.is_active == True)  # noqa: E712
+    result = await session.execute(query)
+    schools = result.scalars().all()
+    return [
+        DraftingSchoolResponse(
+            id=s.id,
+            name=s.name,
+            version=s.version,
+            config=s.config_jsonb,
+            is_active=s.is_active,
+        )
+        for s in schools
+    ]
+
+
+@router.get("/configs/blocks", response_model=List[BlockConfigResponse])
+async def list_blocks(
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> List[BlockConfigResponse]:
+    """List available block configurations."""
+    result = await session.execute(select(BlockConfig))
+    blocks = result.scalars().all()
+    return [
+        BlockConfigResponse(
+            id=b.id,
+            name=b.name,
+            version=b.version,
+            config=b.config_jsonb,
+        )
+        for b in blocks
+    ]
+
+
+@router.get("/configs/ease-profiles", response_model=List[EaseProfileResponse])
+async def list_ease_profiles(
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> List[EaseProfileResponse]:
+    """List available ease profiles."""
+    result = await session.execute(select(EaseProfileConfigModel))
+    profiles = result.scalars().all()
+    return [
+        EaseProfileResponse(
+            id=p.id,
+            name=p.name,
+            version=p.version,
+            config=p.config_jsonb,
+        )
+        for p in profiles
+    ]
+
+
+@router.get("/configs/size-profiles", response_model=List[SizeProfileResponse])
+async def list_size_profiles(
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> List[SizeProfileResponse]:
+    """List available size profiles."""
+    result = await session.execute(select(SizeProfileConfigModel))
+    profiles = result.scalars().all()
+    return [
+        SizeProfileResponse(
+            id=p.id,
+            name=p.name,
+            version=p.version,
+            config=p.config_jsonb,
+        )
+        for p in profiles
+    ]
+
+
+@router.get(
+    "/configs/transform-pipelines", response_model=List[TransformPipelineResponse]
+)
+async def list_transform_pipelines(
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> List[TransformPipelineResponse]:
+    """List available transform pipelines."""
+    result = await session.execute(select(TransformPipelineConfigModel))
+    pipelines = result.scalars().all()
+    return [
+        TransformPipelineResponse(
+            id=p.id,
+            name=p.name,
+            version=p.version,
+            config=p.config_jsonb,
+        )
+        for p in pipelines
+    ]
+
+
+@router.get("/projects/{project_id}/patterns", response_model=List[Dict[str, Any]])
+async def list_project_patterns(
+    project_id: int,
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> List[Dict[str, Any]]:
+    """List all patterns for a project (version history)."""
+    # Verify project belongs to user
+    project_result = await session.execute(
+        select(Project).where(
+            Project.id == project_id,
+            Project.owner_user_id == current_user.id,
+        )
+    )
+    project = project_result.scalars().first()
+    if not project:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Project not found"
+        )
+
+    # Get patterns with results
+    patterns_result = await session.execute(
+        select(Pattern)
+        .where(Pattern.project_id == project_id)
+        .order_by(Pattern.created_at.desc())
+    )
+    patterns = patterns_result.scalars().all()
+    
+    # Get results for each pattern
+    result_list = []
+    for pattern in patterns:
+        result_query = await session.execute(
+            select(PatternResult).where(PatternResult.pattern_id == pattern.id)
+        )
+        result = result_query.scalars().first()
+        result_list.append({
+            "id": pattern.id,
+            "project_id": pattern.project_id,
+            "status": pattern.status,
+            "version_index": pattern.version_index,
+            "tag": pattern.tag,
+            "config": pattern.config_version_bundle_jsonb,
+            "created_at": pattern.created_at.isoformat() if pattern.created_at else None,
+            "has_result": result is not None,
+        })
+    
+    return result_list
+
+
+@router.post("/patterns/{pattern_id}/restore", response_model=Dict[str, Any])
+async def restore_pattern_version(
+    pattern_id: int,
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> Dict[str, Any]:
+    """Restore a previous pattern version by cloning its configuration."""
+    # Verify pattern belongs to user's project
+    pattern_result = await session.execute(
+        select(Pattern)
+        .join(Project)
+        .where(
+            Pattern.id == pattern_id,
+            Project.owner_user_id == current_user.id,
+        )
+    )
+    old_pattern = pattern_result.scalars().first()
+    if not old_pattern:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Pattern not found"
+        )
+
+    # Get the next version index
+    from sqlalchemy import func
+    max_version_result = await session.execute(
+        select(func.max(Pattern.version_index))
+        .where(Pattern.project_id == old_pattern.project_id)
+    )
+    max_version = max_version_result.scalar_one_or_none()
+    next_version = (max_version or 0) + 1
+
+    # Create new pattern with same config
+    new_pattern = Pattern(
+        project_id=old_pattern.project_id,
+        block_type=old_pattern.block_type,
+        engine_api_version=old_pattern.engine_api_version,
+        config_version_bundle_jsonb=old_pattern.config_version_bundle_jsonb,
+        canonical_request_hash=old_pattern.canonical_request_hash,
+        status="pending",
+        version_index=next_version,
+        tag=f"Restored from v{old_pattern.version_index or '?'}",
+    )
+    session.add(new_pattern)
+    await session.flush()
+
+    return {
+        "pattern_id": new_pattern.id,
+        "project_id": new_pattern.project_id,
+        "version_index": new_pattern.version_index,
+        "status": new_pattern.status,
+    }
+
+
+@router.get("/patterns/{pattern_id}/result", response_model=PatternResultResponse)
+async def get_pattern_result(
+    pattern_id: int,
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> PatternResultResponse:
+    """Fetch pattern result including geometry and exports."""
+    # Verify pattern belongs to user's project
+    pattern_result = await session.execute(
+        select(Pattern)
+        .join(Project)
+        .where(
+            Pattern.id == pattern_id,
+            Project.owner_user_id == current_user.id,
+        )
+    )
+    pattern = pattern_result.scalars().first()
+    if not pattern:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Pattern not found"
+        )
+
+    # Get the result
+    result_query = await session.execute(
+        select(PatternResult).where(PatternResult.pattern_id == pattern_id)
+    )
+    result = result_query.scalars().first()
+    if not result:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Pattern result not found"
+        )
+
+    return PatternResultResponse(
+        id=result.id,
+        pattern_id=result.pattern_id,
+        geometry=result.geometry_jsonb,
+        exports=result.exports_jsonb,
+    )
+
+
+@router.post("/patterns/{pattern_id}/export")
+async def export_pattern_file(
+    pattern_id: int,
+    format: str = "svg",
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> Dict[str, Any]:
+    """Export pattern in the specified format (SVG/DXF/PDF)."""
+    from fastapi.responses import Response
+    
+    # Verify pattern belongs to user's project
+    pattern_result = await session.execute(
+        select(Pattern)
+        .join(Project)
+        .where(
+            Pattern.id == pattern_id,
+            Project.owner_user_id == current_user.id,
+        )
+    )
+    pattern = pattern_result.scalars().first()
+    if not pattern:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Pattern not found"
+        )
+
+    # Get the result
+    result_query = await session.execute(
+        select(PatternResult).where(PatternResult.pattern_id == pattern_id)
+    )
+    result = result_query.scalars().first()
+    if not result:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Pattern result not found"
+        )
+
+    # Check if export already exists
+    format_key = format.lower()
+    exports = result.exports_jsonb or {}
+    
+    if format_key in exports:
+        export_data = exports[format_key]
+        if isinstance(export_data, dict) and "content" in export_data:
+            content = export_data["content"]
+            if isinstance(content, str):
+                # Check if it's base64 encoded (PDF) or plain text (SVG/DXF)
+                if format_key == "pdf":
+                    try:
+                        content_bytes = base64.b64decode(content)
+                    except Exception:
+                        content_bytes = content.encode("utf-8")
+                else:
+                    content_bytes = content.encode("utf-8")
+            else:
+                content_bytes = content
+            
+            mime_type = export_data.get("mime_type", "application/octet-stream")
+            return Response(
+                content=content_bytes,
+                media_type=mime_type,
+                headers={
+                    "Content-Disposition": f'attachment; filename="pattern_{pattern_id}.{format_key}"',
+                },
+            )
+
+    # Export not found, return error
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Export format '{format}' not available for this pattern",
+    )
+
+
+@router.post(
+    "/organizations",
+    response_model=OrganizationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_organization(
+    payload: OrganizationCreateRequest,
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> OrganizationResponse:
+    """Create a new organization."""
+    org = Organization(
+        name=payload.name,
+        owner_id=current_user.id,
+    )
+    session.add(org)
+    await session.flush()
+    
+    # Add creator as admin member
+    member = OrganizationMember(
+        organization_id=org.id,
+        user_id=current_user.id,
+        role="admin",
+    )
+    session.add(member)
+    await session.commit()
+    await session.refresh(org)
+    
+    return OrganizationResponse(
+        id=org.id,
+        name=org.name,
+        owner_id=org.owner_id,
+        created_at=org.created_at.isoformat() if org.created_at else "",
+    )
+
+
+@router.get("/organizations", response_model=List[OrganizationResponse])
+async def list_organizations(
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> List[OrganizationResponse]:
+    """List organizations the user belongs to."""
+    result = await session.execute(
+        select(Organization)
+        .join(OrganizationMember)
+        .where(OrganizationMember.user_id == current_user.id)
+    )
+    orgs = result.scalars().all()
+    return [
+        OrganizationResponse(
+            id=o.id,
+            name=o.name,
+            owner_id=o.owner_id,
+            created_at=o.created_at.isoformat() if o.created_at else "",
+        )
+        for o in orgs
+    ]
+
+
+@router.get(
+    "/organizations/{org_id}/members",
+    response_model=List[OrganizationMemberResponse],
+)
+async def list_organization_members(
+    org_id: int,
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> List[OrganizationMemberResponse]:
+    """List members of an organization."""
+    # Verify user is a member
+    member_check = await session.execute(
+        select(OrganizationMember).where(
+            OrganizationMember.organization_id == org_id,
+            OrganizationMember.user_id == current_user.id,
+        )
+    )
+    if not member_check.scalars().first():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not a member of this organization",
+        )
+
+    # Get all members
+    result = await session.execute(
+        select(OrganizationMember, User)
+        .join(User, OrganizationMember.user_id == User.id)
+        .where(OrganizationMember.organization_id == org_id)
+    )
+    members = result.all()
+    return [
+        OrganizationMemberResponse(
+            id=m.id,
+            organization_id=m.organization_id,
+            user_id=m.user_id,
+            user_email=u.email,
+            role=m.role,
+        )
+        for m, u in members
+    ]
+
+
+@router.post(
+    "/organizations/{org_id}/invite",
+    status_code=status.HTTP_201_CREATED,
+)
+async def invite_to_organization(
+    org_id: int,
+    payload: OrganizationInviteRequest,
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> Dict[str, Any]:
+    """Invite a user to an organization."""
+    # Verify user is admin of org
+    member_check = await session.execute(
+        select(OrganizationMember).where(
+            OrganizationMember.organization_id == org_id,
+            OrganizationMember.user_id == current_user.id,
+            OrganizationMember.role == "admin",
+        )
+    )
+    if not member_check.scalars().first():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins can invite members",
+        )
+
+    # Find user by email
+    user_result = await session.execute(
+        select(User).where(User.email == payload.email)
+    )
+    user = user_result.scalars().first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+
+    # Check if already a member
+    existing = await session.execute(
+        select(OrganizationMember).where(
+            OrganizationMember.organization_id == org_id,
+            OrganizationMember.user_id == user.id,
+        )
+    )
+    if existing.scalars().first():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User is already a member",
+        )
+
+    # Add member
+    member = OrganizationMember(
+        organization_id=org_id,
+        user_id=user.id,
+        role=payload.role,
+    )
+    session.add(member)
+    await session.commit()
+    await session.refresh(member)
+
+    return {
+        "id": member.id,
+        "organization_id": member.organization_id,
+        "user_id": member.user_id,
+        "role": member.role,
     }
 
 

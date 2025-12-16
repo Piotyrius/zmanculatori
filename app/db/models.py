@@ -128,6 +128,8 @@ class Pattern(Base):
     )
     canonical_request_hash: Mapped[str] = mapped_column(String(128), index=True)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    version_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    tag: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow
     )

@@ -91,12 +91,18 @@ def export_pattern(geometry: PatternGeometry, options: ExportOptions) -> ExportB
     Export the given pattern geometry according to the provided options.
     """
     from .export.svg_exporter import export_svg
+    from .export.dxf_exporter import export_dxf
+    from .export.pdf_exporter import export_pdf
 
-    # For MVP, support SVG only; DXF/PDF can be added via dispatch here later.
-    if options.format.lower() != "svg":
-        raise ValueError(f"Unsupported export format for engine MVP: {options.format}")
-
-    return export_svg(geometry, options)
+    format_lower = options.format.lower()
+    if format_lower == "svg":
+        return export_svg(geometry, options)
+    elif format_lower == "dxf":
+        return export_dxf(geometry, options)
+    elif format_lower == "pdf":
+        return export_pdf(geometry, options)
+    else:
+        raise ValueError(f"Unsupported export format: {options.format}")
 
 
 __all__ = [
@@ -107,6 +113,7 @@ __all__ = [
     "generate_pattern",
     "export_pattern",
 ]
+
 
 
 
