@@ -9,6 +9,8 @@ from .export.models import ExportOptions, ExportBundle
 from .blocks.builder import build_block_pattern
 from .transforms.pipeline import apply_transform_pipeline
 from .validators.pattern_validator import validate_pattern_geometry
+from .schools.models import DraftingSchoolConfig
+from .rules.models import RuleGraphConfig
 
 
 @dataclass(slots=True)
@@ -45,14 +47,17 @@ class PatternRequest:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
-def generate_pattern(request: PatternRequest) -> PatternGeometry:
+def generate_pattern(
+    request: PatternRequest,
+    drafting_school_config: Optional[DraftingSchoolConfig] = None,
+    rule_graph_config: Optional[RuleGraphConfig] = None,
+) -> PatternGeometry:
     """
     Generate a pattern geometry for the given request.
 
     The caller is responsible for resolving configuration IDs into concrete
     DraftingSchoolConfig, BlockDefinition, RuleGraphConfig, TransformPipelines,
-    etc. For now, this function operates on IDs only and assumes that the
-    block builder and transform pipeline resolve them through pure callables.
+    etc. Configs can be passed directly or will be loaded if not provided.
     """
     # Build base block (stitching line geometry)
     geometry = build_block_pattern(
@@ -63,6 +68,8 @@ def generate_pattern(request: PatternRequest) -> PatternGeometry:
         block_version=request.block_version,
         rule_graph_id=request.rule_graph_id,
         rule_graph_version=request.rule_graph_version,
+        drafting_school_config=drafting_school_config,
+        rule_graph_config=rule_graph_config,
         metadata={
             "garment_type": request.garment_type,
             "fit": request.fit,

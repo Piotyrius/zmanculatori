@@ -9,6 +9,7 @@ from ..rules.models import RuleGraphConfig
 from ..schools.models import DraftingSchoolConfig
 from ..formulas.models import Formula, FormulaContext, FormulaType
 from ..formulas.evaluator import evaluate_formula
+from ..validators.pattern_validator import validate_measurements
 
 
 def build_block_pattern(
@@ -21,6 +22,7 @@ def build_block_pattern(
     rule_graph_id: str,
     rule_graph_version: str,
     drafting_school_config: Optional[DraftingSchoolConfig] = None,
+    rule_graph_config: Optional[RuleGraphConfig] = None,
     metadata: Dict[str, Any] | None = None,
 ) -> PatternGeometry:
     """
@@ -41,6 +43,19 @@ def build_block_pattern(
                 f"Missing required measurements for {drafting_school_config.name}: {missing}"
             )
     
+    # Perform measurement sanity checks
+    category = metadata.get("category", "womenswear") if metadata else "womenswear"
+    measurement_validation = validate_measurements(measurement_profile.values, category)
+    if not measurement_validation.is_valid:
+        error_msg = "; ".join(measurement_validation.errors)
+        raise ValueError(f"Measurement validation failed: {error_msg}")
+    # Warnings are logged but don't block generation
+    if measurement_validation.warnings:
+        import logging
+        logger = logging.getLogger(__name__)
+        for warning in measurement_validation.warnings:
+            logger.warning(f"Measurement warning: {warning}")
+    
     # Build formula context with measurements
     context_vars = dict(measurement_profile.values)
     
@@ -59,9 +74,12 @@ def build_block_pattern(
                 # Log warning but continue - some formulas may depend on values not yet calculated
                 pass
     
-    # Placeholder: the actual graph should be injected by higher-level services.
-    # For engine-core scaffolding, we construct an empty graph.
-    graph = RuleGraphConfig(id=rule_graph_id, version=rule_graph_version, nodes=[])
+    # Use provided rule graph config or create empty one (for backward compatibility)
+    if rule_graph_config:
+        graph = rule_graph_config
+    else:
+        # Fallback: create empty graph (should not happen in production)
+        graph = RuleGraphConfig(id=rule_graph_id, version=rule_graph_version, nodes=[])
 
     geometry = execute_rule_graph(
         graph=graph,

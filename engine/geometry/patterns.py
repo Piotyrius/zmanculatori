@@ -17,6 +17,7 @@ class PatternPiece:
     arcs: List[Arc] = field(default_factory=list)
     splines: List[Spline] = field(default_factory=list)
     guides: List[ConstructionGuide] = field(default_factory=list)
+    metadata: Dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

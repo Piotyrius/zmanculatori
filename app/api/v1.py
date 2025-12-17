@@ -36,6 +36,7 @@ from ..db.models import (
     MeasurementCategory,
 )
 from ..services.pattern_service import PatternService
+from ..services.config_loader import ConfigLoader
 from ..auth.models import Token
 from ..auth.security import verify_password, hash_password, create_access_token
 from ..auth.deps import get_current_user
@@ -482,6 +483,31 @@ async def generate_pattern_endpoint(
         "transform_pipeline_ids": payload.transform_pipeline_ids,
     }
 
+    # Load configs from database
+    config_loader = ConfigLoader(session)
+    drafting_school_config = await config_loader.load_drafting_school(
+        payload.drafting_school_id, payload.drafting_school_version
+    )
+    rule_graph_config = await config_loader.load_rule_graph(
+        payload.rule_graph_id, payload.rule_graph_version
+    )
+
+    if not drafting_school_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Drafting school {payload.drafting_school_id} v{payload.drafting_school_version} not found",
+        )
+
+    if not rule_graph_config:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Rule graph {payload.rule_graph_id} v{payload.rule_graph_version} not found",
+        )
+
+    # Store configs in request metadata for use in pattern generation
+    request.metadata["drafting_school_config"] = drafting_school_config
+    request.metadata["rule_graph_config"] = rule_graph_config
+
     service = PatternService(session)
     pattern = await service.create_pattern_request(
         project_id=project.id,
@@ -490,7 +516,7 @@ async def generate_pattern_endpoint(
         config_version_bundle=config_version_bundle,
     )
 
-    geometry = generate_pattern(request)
+    geometry = generate_pattern(request, drafting_school_config, rule_graph_config)
     
     # Generate exports in all formats
     exports_json: Dict[str, Any] = {}
