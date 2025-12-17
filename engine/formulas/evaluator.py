@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ast
 import math
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from .models import Formula, FormulaContext, FormulaError
 
@@ -26,6 +26,7 @@ _ALLOWED_NODES = (
     ast.Pow,
     ast.USub,
     ast.Num,
+    ast.Constant,  # Python 3.8+ uses Constant instead of Num
     ast.Name,
     ast.Call,
     ast.Load,
@@ -46,22 +47,19 @@ def _validate_ast(node: ast.AST, depth: int = 0, max_depth: int = 16) -> None:
 def evaluate_formula(formula: Formula, context: FormulaContext) -> float:
     """
     Safely evaluate a formula expression against the provided context.
+    
+    Supports all formula types including conditional formulas.
     """
-    try:
-        parsed = ast.parse(formula.expression, mode="eval")
-    except SyntaxError as exc:
-        raise FormulaError(f"Invalid formula syntax: {formula.expression}") from exc
-
-    _validate_ast(parsed)
-
-    def _eval(node: ast.AST) -> float:
+    def _eval(node: ast.AST, ctx: FormulaContext) -> float:
         if isinstance(node, ast.Expression):
-            return _eval(node.body)
+            return _eval(node.body, ctx)
         if isinstance(node, ast.Num):
             return float(node.n)
+        if isinstance(node, ast.Constant):  # Python 3.8+ uses Constant instead of Num
+            return float(node.value)
         if isinstance(node, ast.BinOp):
-            left = _eval(node.left)
-            right = _eval(node.right)
+            left = _eval(node.left, ctx)
+            right = _eval(node.right, ctx)
             if isinstance(node.op, ast.Add):
                 return left + right
             if isinstance(node.op, ast.Sub):
@@ -73,12 +71,12 @@ def evaluate_formula(formula: Formula, context: FormulaContext) -> float:
             if isinstance(node.op, ast.Pow):
                 return left**right
         if isinstance(node, ast.UnaryOp):
-            operand = _eval(node.operand)
+            operand = _eval(node.operand, ctx)
             if isinstance(node.op, ast.USub):
                 return -operand
         if isinstance(node, ast.Name):
             try:
-                return float(context.variables[node.id])
+                return float(ctx.variables[node.id])
             except KeyError as exc:
                 raise FormulaError(f"Unknown variable in formula: {node.id}") from exc
         if isinstance(node, ast.Call):
@@ -88,14 +86,74 @@ def evaluate_formula(formula: Formula, context: FormulaContext) -> float:
             if func_name not in _ALLOWED_FUNCS:
                 raise FormulaError(f"Disallowed function: {func_name}")
             func = _ALLOWED_FUNCS[func_name]
-            args = [_eval(arg) for arg in node.args]
+            args = [_eval(arg, ctx) for arg in node.args]
             return float(func(*args))
         raise FormulaError(f"Unsupported expression element: {type(node).__name__}")
+    
+    # Check if this is a conditional formula
+    from .models import FormulaType
+    if formula.formula_type == FormulaType.CONDITIONAL and formula.condition:
+        # Evaluate condition first
+        try:
+            condition_parsed = ast.parse(formula.condition, mode="eval")
+            _validate_ast(condition_parsed)
+            condition_result = _eval(condition_parsed.body, context)
+            
+            # Check threshold if provided
+            if formula.threshold is not None:
+                if not (condition_result >= formula.threshold):
+                    # Condition not met, return default or raise
+                    raise FormulaError(
+                        f"Condition not met: {formula.condition} >= {formula.threshold}"
+                    )
+            elif not condition_result:
+                # Boolean condition false
+                raise FormulaError(f"Condition not met: {formula.condition}")
+        except Exception as exc:
+            if isinstance(exc, FormulaError):
+                raise
+            raise FormulaError(f"Invalid condition: {formula.condition}") from exc
+    
+    try:
+        parsed = ast.parse(formula.expression, mode="eval")
+    except SyntaxError as exc:
+        raise FormulaError(f"Invalid formula syntax: {formula.expression}") from exc
 
-    value = _eval(parsed)
+    _validate_ast(parsed)
+
+    value = _eval(parsed.body, context)
     if math.isnan(value) or math.isinf(value):
         raise FormulaError("Formula evaluation produced invalid numeric result")
     return value
+
+
+def evaluate_conditional_formula(
+    formula: Formula,
+    context: FormulaContext,
+    default: Optional[float] = None
+) -> Optional[float]:
+    """
+    Evaluate a conditional formula, returning default if condition not met.
+    """
+    try:
+        return evaluate_formula(formula, context)
+    except FormulaError:
+        if default is not None:
+            return default
+        raise
+
+
+def calculate_derived_measurement(
+    formula: Formula,
+    context: FormulaContext
+) -> Dict[str, float]:
+    """
+    Calculate a derived measurement using a formula.
+    Returns a dict with the output_name and calculated value.
+    """
+    value = evaluate_formula(formula, context)
+    output_name = formula.output_name or "derived_value"
+    return {output_name: value}
 
 
 

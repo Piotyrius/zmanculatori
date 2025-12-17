@@ -10,6 +10,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -153,11 +154,18 @@ class PatternResult(Base):
 
 class DraftingSchool(Base):
     __tablename__ = "drafting_schools"
+    __table_args__ = (
+        Index("idx_drafting_schools_name_version", "name", "version"),
+        Index("idx_drafting_schools_active", "is_active"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     version: Mapped[str] = mapped_column(String(32), nullable=False)
     config_jsonb: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    content_metadata_jsonb: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )  # For extensibility
     engine_min_version: Mapped[Optional[str]] = mapped_column(String(16))
     engine_max_version: Mapped[Optional[str]] = mapped_column(String(16))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -168,11 +176,17 @@ class DraftingSchool(Base):
 
 class BlockConfig(Base):
     __tablename__ = "blocks"
+    __table_args__ = (
+        Index("idx_blocks_name_version", "name", "version"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     version: Mapped[str] = mapped_column(String(32), nullable=False)
     config_jsonb: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    content_metadata_jsonb: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )  # For extensibility
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow
     )
@@ -185,6 +199,9 @@ class RuleGraphConfigModel(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     version: Mapped[str] = mapped_column(String(32), nullable=False)
     config_jsonb: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    content_metadata_jsonb: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )  # For extensibility
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow
     )
@@ -197,6 +214,9 @@ class TransformPipelineConfigModel(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     version: Mapped[str] = mapped_column(String(32), nullable=False)
     config_jsonb: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    content_metadata_jsonb: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )  # For extensibility
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow
     )
@@ -221,6 +241,9 @@ class EaseProfileConfigModel(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     version: Mapped[str] = mapped_column(String(32), nullable=False)
     config_jsonb: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    content_metadata_jsonb: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )  # For extensibility
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow
     )
@@ -233,6 +256,74 @@ class SeamAllowanceProfileConfigModel(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     version: Mapped[str] = mapped_column(String(32), nullable=False)
     config_jsonb: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+
+class EducationalContent(Base):
+    __tablename__ = "educational_content"
+    __table_args__ = (
+        Index("idx_educational_content_school", "drafting_school_id", "drafting_school_version"),
+        Index("idx_educational_content_block", "block_id", "block_version"),
+        Index("idx_educational_content_type", "content_type"),
+        Index("idx_educational_content_priority", "priority"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)  # Markdown content
+    language: Mapped[str] = mapped_column(String(8), nullable=False, default="en")
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    
+    # Links to related resources (optional)
+    drafting_school_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("drafting_schools.id")
+    )
+    drafting_school_version: Mapped[Optional[str]] = mapped_column(String(32))
+    block_id: Mapped[Optional[int]] = mapped_column(ForeignKey("blocks.id"))
+    block_version: Mapped[Optional[str]] = mapped_column(String(32))
+    measurement_name: Mapped[Optional[str]] = mapped_column(String(64))
+    
+    metadata_jsonb: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+
+class MeasurementCategory(Base):
+    __tablename__ = "measurement_categories"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    metadata_jsonb: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+
+
+class GradingTableConfig(Base):
+    __tablename__ = "grading_tables"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    version: Mapped[str] = mapped_column(String(32), nullable=False)
+    config_jsonb: Mapped[Dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    content_metadata_jsonb: Mapped[Dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict
+    )
+    drafting_school_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("drafting_schools.id")
+    )
+    drafting_school_version: Mapped[Optional[str]] = mapped_column(String(32))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=datetime.utcnow
     )

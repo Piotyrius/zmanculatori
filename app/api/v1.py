@@ -32,6 +32,8 @@ from ..db.models import (
     Organization,
     OrganizationMember,
     ApiToken,
+    EducationalContent,
+    MeasurementCategory,
 )
 from ..services.pattern_service import PatternService
 from ..auth.models import Token
@@ -143,6 +145,28 @@ class RuleGraphResponse(BaseModel):
     name: str
     version: str
     config: Dict[str, Any]
+
+
+class MeasurementCategoryResponse(BaseModel):
+    id: int
+    name: str
+    category: str
+    description: Optional[str]
+    is_required: bool
+
+
+class EducationalContentResponse(BaseModel):
+    id: int
+    title: str
+    content_type: str
+    content: str
+    language: str
+    priority: int
+    drafting_school_id: Optional[int]
+    drafting_school_version: Optional[str]
+    block_id: Optional[int]
+    block_version: Optional[str]
+    measurement_name: Optional[str]
 
 
 class PatternResultResponse(BaseModel):
@@ -640,6 +664,206 @@ async def list_rule_graphs(
         )
         for g in graphs
     ]
+
+
+@router.get("/configs/measurement-categories", response_model=List[MeasurementCategoryResponse])
+async def list_measurement_categories(
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> List[MeasurementCategoryResponse]:
+    """List all measurement categories."""
+    result = await session.execute(select(MeasurementCategory))
+    categories = result.scalars().all()
+    return [
+        MeasurementCategoryResponse(
+            id=c.id,
+            name=c.name,
+            category=c.category,
+            description=c.description,
+            is_required=c.is_required,
+        )
+        for c in categories
+    ]
+
+
+@router.get(
+    "/configs/drafting-schools/{school_id}/educational-content",
+    response_model=List[EducationalContentResponse],
+)
+async def get_drafting_school_educational_content(
+    school_id: int,
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> List[EducationalContentResponse]:
+    """Get educational content for a drafting school."""
+    # Verify school exists
+    school_result = await session.execute(
+        select(DraftingSchool).where(DraftingSchool.id == school_id)
+    )
+    school = school_result.scalars().first()
+    if not school:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Drafting school not found"
+        )
+    
+    # Get educational content
+    result = await session.execute(
+        select(EducationalContent).where(
+            EducationalContent.drafting_school_id == school_id
+        ).order_by(EducationalContent.priority)
+    )
+    content_list = result.scalars().all()
+    return [
+        EducationalContentResponse(
+            id=c.id,
+            title=c.title,
+            content_type=c.content_type,
+            content=c.content,
+            language=c.language,
+            priority=c.priority,
+            drafting_school_id=c.drafting_school_id,
+            drafting_school_version=c.drafting_school_version,
+            block_id=c.block_id,
+            block_version=c.block_version,
+            measurement_name=c.measurement_name,
+        )
+        for c in content_list
+    ]
+
+
+@router.get("/configs/blocks", response_model=List[BlockConfigResponse])
+async def list_blocks_filtered(
+    school_id: Optional[int] = None,
+    block_type: Optional[str] = None,
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> List[BlockConfigResponse]:
+    """List available block configurations with optional filters."""
+    query = select(BlockConfig)
+    
+    if school_id:
+        # Filter by school if block config references it
+        # This would require checking config_jsonb, simplified here
+        pass
+    
+    if block_type:
+        # Filter by block type from config_jsonb
+        # This would require JSONB query, simplified here
+        pass
+    
+    result = await session.execute(query)
+    blocks_list = result.scalars().all()
+    return [
+        BlockConfigResponse(
+            id=b.id,
+            name=b.name,
+            version=b.version,
+            config=b.config_jsonb,
+        )
+        for b in blocks_list
+    ]
+
+
+@router.get("/configs/formula-types", response_model=List[str])
+async def list_formula_types(
+    current_user: User = Depends(get_current_user),  # noqa: B008
+) -> List[str]:
+    """List available formula types."""
+    from engine.formulas.models import FormulaType
+    return [ft.value for ft in FormulaType]
+
+
+@router.get("/configs/ease-profiles", response_model=List[EaseProfileResponse])
+async def list_ease_profiles_filtered(
+    fit: Optional[str] = None,
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> List[EaseProfileResponse]:
+    """List available ease profiles with optional fit filter."""
+    query = select(EaseProfileConfigModel)
+    
+    if fit:
+        # Filter by fit profile from config_jsonb
+        # This would require JSONB query, simplified here
+        pass
+    
+    result = await session.execute(query)
+    profiles = result.scalars().all()
+    return [
+        EaseProfileResponse(
+            id=p.id,
+            name=p.name,
+            version=p.version,
+            config=p.config_jsonb,
+        )
+        for p in profiles
+    ]
+
+
+@router.post("/measurement-profiles/validate")
+async def validate_measurement_profile(
+    payload: MeasurementProfileCreateRequest,
+    school_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> Dict[str, Any]:
+    """Validate measurement profile against school requirements."""
+    from engine.measurements.models import MeasurementProfile as EngineMeasurementProfile
+    
+    profile = EngineMeasurementProfile(
+        values=payload.values,
+        unit=payload.unit,
+    )
+    
+    missing = []
+    warnings = []
+    
+    if school_id:
+        # Get school and check requirements
+        school_result = await session.execute(
+            select(DraftingSchool).where(DraftingSchool.id == school_id)
+        )
+        school = school_result.scalars().first()
+        if school:
+            config = school.config_jsonb
+            required = config.get("measurement_requirements", {}).get("required", [])
+            missing = profile.validate_required(required)
+    
+    return {
+        "is_valid": len(missing) == 0,
+        "missing_measurements": missing,
+        "warnings": warnings,
+    }
+
+
+@router.get("/configs/grade-rules")
+async def get_grade_rules(
+    school_id: Optional[int] = None,
+    current_user: User = Depends(get_current_user),  # noqa: B008
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+) -> Dict[str, Any]:
+    """Get grade rules, optionally filtered by school."""
+    # In a full implementation, this would query a grading_tables table
+    # For now, return structure indicating where grade rules would come from
+    result = {
+        "grade_rules": [],
+        "school_id": school_id,
+    }
+    
+    if school_id:
+        # Get school to check if it has associated grading tables
+        school_result = await session.execute(
+            select(DraftingSchool).where(DraftingSchool.id == school_id)
+        )
+        school = school_result.scalars().first()
+        if school:
+            # Check config for grading table references
+            config = school.config_jsonb
+            # Grade rules would be stored in a separate grading_tables table
+            # This is a placeholder structure
+            result["message"] = "Grade rules would be retrieved from grading tables associated with this school"
+    
+    return result
 
 
 @router.get("/projects/{project_id}/patterns", response_model=List[Dict[str, Any]])
