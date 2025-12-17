@@ -27,3 +27,4 @@ def validate_pattern_geometry(geometry: PatternGeometry) -> PatternValidationRes
 
 
 
+
