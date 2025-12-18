@@ -63,3 +63,4 @@ class EaseProfile:
         measurement_ease = self.ease_values.get(measurement_name, {})
         return sum(measurement_ease.values())
 
+

@@ -76,3 +76,4 @@ class DraftingSchoolConfig:
     # Metadata for extensibility
     metadata: Dict[str, any] = field(default_factory=dict)
 
+

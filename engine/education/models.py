@@ -43,3 +43,4 @@ class EducationalContent:
     # Priority/ordering
     priority: int = 0  # Lower numbers shown first
 
+

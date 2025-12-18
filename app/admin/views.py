@@ -110,3 +110,4 @@ class ConfigAuditLogAdmin(ModelView, model=ConfigAuditLog):  # type: ignore[misc
 
 
 
+

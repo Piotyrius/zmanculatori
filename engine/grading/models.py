@@ -96,3 +96,4 @@ class GradingTable:
         else:
             return base_value
 
+
