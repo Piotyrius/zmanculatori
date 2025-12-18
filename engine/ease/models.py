@@ -64,3 +64,4 @@ class EaseProfile:
         return sum(measurement_ease.values())
 
 
+
