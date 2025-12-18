@@ -28,3 +28,5 @@ def test_generate_pattern_does_not_crash_for_empty_graph() -> None:
 
 
 
+
+
