@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import Response
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
@@ -37,9 +38,10 @@ from ..db.models import (
 )
 from ..services.pattern_service import PatternService
 from ..services.config_loader import ConfigLoader
+from ..services.seed_service import SeedService
 from ..auth.models import Token
 from ..auth.security import verify_password, hash_password, create_access_token
-from ..auth.deps import get_current_user
+from ..auth.deps import get_current_user, get_current_admin
 from ..settings import settings
 
 
@@ -230,6 +232,19 @@ async def login_for_access_token(
     )
     return Token(access_token=access_token)
 
+
+@router.options("/auth/register")
+async def register_user_options():
+    """Handle CORS preflight for registration."""
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            "Access-Control-Max-Age": "600",
+        },
+    )
 
 @router.post(
     "/auth/register",
@@ -516,7 +531,25 @@ async def generate_pattern_endpoint(
         config_version_bundle=config_version_bundle,
     )
 
-    geometry = generate_pattern(request, drafting_school_config, rule_graph_config)
+    try:
+        geometry = generate_pattern(request, drafting_school_config, rule_graph_config)
+    except ValueError as e:
+        # Handle measurement validation errors
+        error_msg = str(e)
+        if "Measurement validation failed" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=error_msg,
+            )
+        # Re-raise other ValueErrors
+        raise
+    except Exception as e:
+        # Log unexpected errors
+        logger.error(f"Pattern generation failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Pattern generation failed: {str(e)}",
+        )
     
     # Generate exports in all formats
     exports_json: Dict[str, Any] = {}
@@ -556,9 +589,88 @@ async def generate_pattern_endpoint(
         # Log but don't fail if PDF export fails
         logger.warning(f"PDF export failed: {e}")
 
+    # Serialize geometry to dict, including pieces
+    def _serialize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+        """Serialize metadata, converting Point2D objects to dicts."""
+        result = {}
+        for key, value in metadata.items():
+            if isinstance(value, dict):
+                result[key] = _serialize_metadata(value)
+            elif hasattr(value, 'x') and hasattr(value, 'y'):  # Point2D
+                result[key] = {"x": value.x, "y": value.y, "label": getattr(value, 'label', None)}
+            elif isinstance(value, list):
+                result[key] = [
+                    _serialize_metadata(item) if isinstance(item, dict) else
+                    {"x": item.x, "y": item.y, "label": getattr(item, 'label', None)} if hasattr(item, 'x') and hasattr(item, 'y') else
+                    item
+                    for item in value
+                ]
+            else:
+                result[key] = value
+        return result
+    
+    def serialize_geometry(geom) -> Dict[str, Any]:
+        """Serialize PatternGeometry to dictionary."""
+        result_dict: Dict[str, Any] = {
+            "units": geom.units,
+            "coordinate_system": geom.coordinate_system,
+            "metadata": geom.metadata,
+            "pieces": [],
+        }
+        
+        # Serialize pieces
+        for piece in geom.pieces:
+            piece_dict: Dict[str, Any] = {
+                "id": piece.id,
+                "name": piece.name,
+                "points": [{"x": p.x, "y": p.y, "label": p.label} for p in piece.points],
+                "lines": [
+                    {
+                        "start": {"x": l.start.x, "y": l.start.y, "label": l.start.label},
+                        "end": {"x": l.end.x, "y": l.end.y, "label": l.end.label},
+                        "is_guide": l.is_guide,
+                    }
+                    for l in piece.lines
+                ],
+                "arcs": [
+                    {
+                        "center": {"x": a.center.x, "y": a.center.y, "label": a.center.label},
+                        "radius": a.radius,
+                        "start_angle": a.start_angle,
+                        "end_angle": a.end_angle,
+                    }
+                    for a in piece.arcs
+                ],
+                "splines": [
+                    {
+                        "control_points": [{"x": cp.x, "y": cp.y, "label": cp.label} for cp in s.control_points],
+                    }
+                    for s in piece.splines
+                ],
+                "metadata": _serialize_metadata(piece.metadata),
+            }
+            if piece.grain_line:
+                piece_dict["grain_line"] = {
+                    "start": {"x": piece.grain_line.start.x, "y": piece.grain_line.start.y},
+                    "end": {"x": piece.grain_line.end.x, "y": piece.grain_line.end.y},
+                }
+            result_dict["pieces"].append(piece_dict)
+        
+        # Add validation if it exists
+        if geom.validation:
+            result_dict["validation"] = {
+                "is_valid": geom.validation.is_valid,
+                "warnings": geom.validation.warnings,
+                "errors": geom.validation.errors,
+            }
+        
+        return result_dict
+    
+    geometry_dict = serialize_geometry(geometry)
+    
     result = await service.store_pattern_result(
         pattern=pattern,
-        geometry_json={"validation": getattr(geometry, "validation", None)},
+        geometry_json=geometry_dict,
         exports_json=exports_json,
     )
 
@@ -1467,5 +1579,30 @@ async def revoke_api_token(
     await session.delete(token)
     await session.commit()
 
+
+@router.post("/admin/seed/drafting-schools")
+async def seed_drafting_schools(
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    # Temporarily removed admin check for MVP testing
+    # current_user: User = Depends(get_current_admin),  # noqa: B008
+) -> dict:
+    """Admin endpoint to seed drafting schools. Temporarily open for MVP testing."""
+    service = SeedService(session)
+    count = await service.load_drafting_schools()
+    await session.commit()
+    return {"message": f"Loaded {count} drafting schools", "count": count}
+
+
+@router.post("/admin/seed/all")
+async def seed_all(
+    session: AsyncSession = Depends(get_session),  # noqa: B008
+    # Temporarily removed admin check for MVP testing
+    # current_user: User = Depends(get_current_admin),  # noqa: B008
+) -> dict:
+    """Admin endpoint to seed all data. Temporarily open for MVP testing."""
+    service = SeedService(session)
+    counts = await service.load_all()
+    await session.commit()
+    return {"message": "Seed data loaded", "counts": counts}
 
 

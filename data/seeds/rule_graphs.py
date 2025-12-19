@@ -305,7 +305,7 @@ def get_rule_graphs() -> List[Dict[str, any]]:
                         "id": "back_armhole_bottom",
                         "type": "CONSTRUCT_POINT",
                         "params": {
-                            "x_var": "0",
+                            "x_var": "zero",
                             "y_var": "back_armhole_bottom_y",
                             "label": "Back Armhole Bottom"
                         },

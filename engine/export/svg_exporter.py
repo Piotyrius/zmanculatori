@@ -63,17 +63,17 @@ def export_svg(geometry: PatternGeometry, options: ExportOptions) -> ExportBundl
         # Render cutting lines (lines, arcs, splines)
         for line in piece.lines:
             if not line.is_guide:
-                _draw_line(piece_group, line, scale)
+                _draw_line(dwg, piece_group, line, scale)
         
         for arc in piece.arcs:
-            _draw_arc(piece_group, arc, scale)
+            _draw_arc(dwg, piece_group, arc, scale)
         
         for spline in piece.splines:
-            _draw_spline(piece_group, spline, scale)
+            _draw_spline(dwg, piece_group, spline, scale)
         
         # Render grain line (dashed with arrow)
         if piece.grain_line:
-            _draw_grain_line(piece_group, piece.grain_line, scale)
+            _draw_grain_line(dwg, piece_group, piece.grain_line, scale)
         
         # Render notches
         if 'notches' in piece.metadata:
@@ -81,10 +81,10 @@ def export_svg(geometry: PatternGeometry, options: ExportOptions) -> ExportBundl
                 if isinstance(notch, dict) and 'location' in notch:
                     location = notch['location']
                     if isinstance(location, Point2D):
-                        _draw_notch(piece_group, location, scale)
+                        _draw_notch(dwg, piece_group, location, scale)
         
         # Render piece label
-        _draw_piece_label(piece_group, piece, scale, min_x, min_y)
+        _draw_piece_label(dwg, piece_group, piece, scale, min_x, min_y)
         
         dwg.add(piece_group)
 
@@ -97,9 +97,9 @@ def export_svg(geometry: PatternGeometry, options: ExportOptions) -> ExportBundl
     return ExportBundle(content=svg_bytes, mime_type="image/svg+xml", metadata=metadata)
 
 
-def _draw_line(dwg: svgwrite.Drawing, line: LineSegment, scale: float) -> None:
+def _draw_line(dwg: svgwrite.Drawing, group: svgwrite.container.Group, line: LineSegment, scale: float) -> None:
     """Draw a line segment."""
-    dwg.add(
+    group.add(
         dwg.line(
             start=(line.start.x, line.start.y),
             end=(line.end.x, line.end.y),
@@ -109,7 +109,7 @@ def _draw_line(dwg: svgwrite.Drawing, line: LineSegment, scale: float) -> None:
     )
 
 
-def _draw_arc(dwg: svgwrite.Drawing, arc: Arc, scale: float) -> None:
+def _draw_arc(dwg: svgwrite.Drawing, group: svgwrite.container.Group, arc: Arc, scale: float) -> None:
     """Draw an arc as SVG path."""
     # Convert arc to SVG arc path
     start_x = arc.center.x + arc.radius * math.cos(math.radians(arc.start_angle))
@@ -124,7 +124,7 @@ def _draw_arc(dwg: svgwrite.Drawing, arc: Arc, scale: float) -> None:
     large_arc = 1 if sweep_angle > 180 else 0
     
     path_data = f"M {start_x} {start_y} A {arc.radius} {arc.radius} 0 {large_arc} 1 {end_x} {end_y}"
-    dwg.add(
+    group.add(
         dwg.path(
             d=path_data,
             stroke="black",
@@ -134,7 +134,7 @@ def _draw_arc(dwg: svgwrite.Drawing, arc: Arc, scale: float) -> None:
     )
 
 
-def _draw_spline(dwg: svgwrite.Drawing, spline: Spline, scale: float) -> None:
+def _draw_spline(dwg: svgwrite.Drawing, group: svgwrite.container.Group, spline: Spline, scale: float) -> None:
     """Draw a spline as SVG path with Bezier curves."""
     if len(spline.control_points) < 2:
         return
@@ -167,7 +167,7 @@ def _draw_spline(dwg: svgwrite.Drawing, spline: Spline, scale: float) -> None:
                     f"T {spline.control_points[i + 1].x} {spline.control_points[i + 1].y}"
                 )
     
-    dwg.add(
+    group.add(
         dwg.path(
             d=" ".join(path_parts),
             stroke="black",
@@ -177,10 +177,10 @@ def _draw_spline(dwg: svgwrite.Drawing, spline: Spline, scale: float) -> None:
     )
 
 
-def _draw_grain_line(dwg: svgwrite.Drawing, grain_line: LineSegment, scale: float) -> None:
+def _draw_grain_line(dwg: svgwrite.Drawing, group: svgwrite.container.Group, grain_line: LineSegment, scale: float) -> None:
     """Draw grain line with dashed style and arrow."""
     # Draw dashed line
-    dwg.add(
+    group.add(
         dwg.line(
             start=(grain_line.start.x, grain_line.start.y),
             end=(grain_line.end.x, grain_line.end.y),
@@ -211,7 +211,7 @@ def _draw_grain_line(dwg: svgwrite.Drawing, grain_line: LineSegment, scale: floa
         
         # Draw arrow
         arrow_path = f"M {grain_line.end.x} {grain_line.end.y} L {arrow_x1} {arrow_y1} M {grain_line.end.x} {grain_line.end.y} L {arrow_x2} {arrow_y2}"
-        dwg.add(
+        group.add(
             dwg.path(
                 d=arrow_path,
                 stroke="blue",
@@ -221,7 +221,7 @@ def _draw_grain_line(dwg: svgwrite.Drawing, grain_line: LineSegment, scale: floa
         )
 
 
-def _draw_notch(dwg: svgwrite.Drawing, location: Point2D, scale: float) -> None:
+def _draw_notch(dwg: svgwrite.Drawing, group: svgwrite.container.Group, location: Point2D, scale: float) -> None:
     """Draw a notch marker."""
     notch_size = 3
     # Draw small triangle notch
@@ -230,7 +230,7 @@ def _draw_notch(dwg: svgwrite.Drawing, location: Point2D, scale: float) -> None:
         f"L {location.x - notch_size} {location.y} "
         f"L {location.x + notch_size} {location.y} Z"
     )
-    dwg.add(
+    group.add(
         dwg.path(
             d=notch_path,
             stroke="black",
@@ -240,7 +240,7 @@ def _draw_notch(dwg: svgwrite.Drawing, location: Point2D, scale: float) -> None:
     )
 
 
-def _draw_piece_label(dwg: svgwrite.Drawing, piece: PatternPiece, scale: float, min_x: float, min_y: float) -> None:
+def _draw_piece_label(dwg: svgwrite.Drawing, group: svgwrite.container.Group, piece: PatternPiece, scale: float, min_x: float, min_y: float) -> None:
     """Draw piece label and metadata."""
     # Find center of piece for label placement
     if piece.points:
@@ -265,7 +265,7 @@ def _draw_piece_label(dwg: svgwrite.Drawing, piece: PatternPiece, scale: float, 
     label_text = "\n".join(label_parts)
     
     # Draw label background
-    dwg.add(
+    group.add(
         dwg.rect(
             insert=(center_x - 30, center_y - 15),
             size=(60, 30),
@@ -277,7 +277,7 @@ def _draw_piece_label(dwg: svgwrite.Drawing, piece: PatternPiece, scale: float, 
     )
     
     # Draw label text
-    dwg.add(
+    group.add(
         dwg.text(
             label_text,
             insert=(center_x, center_y),
@@ -288,6 +288,7 @@ def _draw_piece_label(dwg: svgwrite.Drawing, piece: PatternPiece, scale: float, 
             fill="black",
         )
     )
+
 
 
 

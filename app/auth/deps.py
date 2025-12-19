@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
@@ -28,7 +29,9 @@ async def get_current_user(
     )
     try:
         token_data = decode_token(token, secret_key=settings.jwt_secret_key)
-    except Exception:
+    except Exception as exc:
+        logger = logging.getLogger(__name__)
+        logger.warning(f"Token validation failed: {type(exc).__name__}: {exc}")
         raise credentials_exception
 
     result = await session.execute(select(User).where(User.email == token_data.sub))
@@ -44,6 +47,8 @@ async def get_current_admin(
     if not user.is_admin:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enough permissions")
     return user
+
+
 
 
 

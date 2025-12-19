@@ -6,6 +6,7 @@ __pycache__/
 *.pytest_cache/
 .pytest_cache/
 .mypy_cache/
+*.egg-info/
 
 # Virtual environments
 .venv/
@@ -36,10 +37,42 @@ dist/
 
 # Docker
 *.pid
+docker-compose.override.yml
 
 # Local env files
 .env
 .env.local
+
+# Database backups and temporary SQL files
+*.sql
+!migrations/*.sql
+db_backup_*.sql
+seed_*.sql
+update_*.sql
+fix_*.sql
+
+# Temporary test scripts
+test_*.ps1
+test_*.sh
+test_*.bat
+
+# Documentation files (temporary fix summaries)
+*_FIX*.md
+*_SUMMARY.md
+*_QUICK*.md
+*_READINESS*.md
+EXPORT_AND_IMAGE_FIXES.md
+CORS_FIX_SUMMARY.md
+DATABASE_PERSISTENCE_FIX.md
+FIXES_APPLIED.md
+TESTING_SUMMARY.md
+
+# Temporary seed scripts
+seed_*.py
+!data/seeds/*.py
+
+
+
 
 
 

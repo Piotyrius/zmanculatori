@@ -29,7 +29,8 @@ def create_access_token(
     expires_delta: Optional[timedelta] = None,
 ) -> str:
     if expires_delta is None:
-        expires_delta = timedelta(minutes=30)
+        # Extended expiration for development (24 hours)
+        expires_delta = timedelta(hours=24)
     expire = datetime.now(timezone.utc) + expires_delta
     to_encode: dict[str, Any] = {"sub": subject, "exp": expire, "is_admin": is_admin}
     return jwt.encode(to_encode, secret_key, algorithm=algorithm)

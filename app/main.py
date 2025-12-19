@@ -43,13 +43,20 @@ app = FastAPI(
     openapi_url="/openapi.json",
 )
 
-# CORS configuration for local frontend (Next.js on http://localhost:3000)
+# CORS configuration for local frontend (Next.js)
+# Allow common localhost and network IPs for development
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://172.30.224.1:3000",  # Docker/network IP
+        "http://0.0.0.0:3000",
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 
@@ -116,6 +123,7 @@ app.include_router(api_v1_router, prefix="/v1")
 
 
 Instrumentator().instrument(app).expose(app)
+
 
 
 

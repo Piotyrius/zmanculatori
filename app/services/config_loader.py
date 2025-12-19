@@ -37,21 +37,42 @@ class ConfigLoader:
         self, school_id: str, school_version: str
     ) -> Optional[DraftingSchoolConfig]:
         """Load drafting school from database and convert to DraftingSchoolConfig."""
-        # Load by name and version first, then check config_jsonb id
-        result = await self.session.execute(
-            select(DraftingSchool).where(
-                DraftingSchool.version == school_version,
+        # Try to load by database ID first
+        try:
+            db_id = int(school_id)
+            result = await self.session.execute(
+                select(DraftingSchool).where(
+                    DraftingSchool.id == db_id,
+                    DraftingSchool.version == school_version,
+                )
             )
-        )
-        schools = result.scalars().all()
+            school = result.scalar_one_or_none()
+            if school:
+                # Use the config ID from the school's config_jsonb
+                config_id = school.config_jsonb.get("id") if school.config_jsonb else school_id
+            else:
+                school = None
+        except ValueError:
+            # Not a numeric ID, treat as config ID
+            config_id = school_id
+            school = None
         
-        # Find school with matching id in config_jsonb
-        school = None
-        for s in schools:
-            config_id = s.config_jsonb.get("id") if s.config_jsonb else None
-            if config_id == school_id:
-                school = s
-                break
+        # If not found by DB ID, search by config ID in config_jsonb
+        if not school:
+            result = await self.session.execute(
+                select(DraftingSchool).where(
+                    DraftingSchool.version == school_version,
+                )
+            )
+            schools = result.scalars().all()
+            
+            # Find school with matching id in config_jsonb
+            for s in schools:
+                s_config_id = s.config_jsonb.get("id") if s.config_jsonb else None
+                if s_config_id == config_id:
+                    school = s
+                    config_id = s_config_id
+                    break
         
         if not school:
             logger.warning(f"Drafting school {school_id} v{school_version} not found")
@@ -86,7 +107,7 @@ class ConfigLoader:
         drafting_conventions = DraftingConventions(conventions=conv_json.get("conventions", {}))
 
         return DraftingSchoolConfig(
-            id=config_json.get("id", school_id),
+            id=config_json.get("id", config_id),
             name=config_json.get("name", school.name),
             version=config_json.get("version", school_version),
             category=category,
@@ -103,21 +124,42 @@ class ConfigLoader:
         self, rule_graph_id: str, rule_graph_version: str
     ) -> Optional[RuleGraphConfig]:
         """Load rule graph from database and convert to RuleGraphConfig."""
-        # Load by version first, then check config_jsonb id
-        result = await self.session.execute(
-            select(RuleGraphConfigModel).where(
-                RuleGraphConfigModel.version == rule_graph_version,
+        # Try to load by database ID first
+        try:
+            db_id = int(rule_graph_id)
+            result = await self.session.execute(
+                select(RuleGraphConfigModel).where(
+                    RuleGraphConfigModel.id == db_id,
+                    RuleGraphConfigModel.version == rule_graph_version,
+                )
             )
-        )
-        rule_graphs = result.scalars().all()
+            rule_graph_model = result.scalar_one_or_none()
+            if rule_graph_model:
+                # Use the config ID from the rule graph's config_jsonb
+                config_id = rule_graph_model.config_jsonb.get("id") if rule_graph_model.config_jsonb else rule_graph_id
+            else:
+                rule_graph_model = None
+        except ValueError:
+            # Not a numeric ID, treat as config ID
+            config_id = rule_graph_id
+            rule_graph_model = None
         
-        # Find rule graph with matching id in config_jsonb
-        rule_graph_model = None
-        for rg in rule_graphs:
-            config_id = rg.config_jsonb.get("id") if rg.config_jsonb else None
-            if config_id == rule_graph_id:
-                rule_graph_model = rg
-                break
+        # If not found by DB ID, search by config ID in config_jsonb
+        if not rule_graph_model:
+            result = await self.session.execute(
+                select(RuleGraphConfigModel).where(
+                    RuleGraphConfigModel.version == rule_graph_version,
+                )
+            )
+            rule_graphs = result.scalars().all()
+            
+            # Find rule graph with matching id in config_jsonb
+            for rg in rule_graphs:
+                rg_config_id = rg.config_jsonb.get("id") if rg.config_jsonb else None
+                if rg_config_id == config_id:
+                    rule_graph_model = rg
+                    config_id = rg_config_id
+                    break
         
         if not rule_graph_model:
             logger.warning(f"Rule graph {rule_graph_id} v{rule_graph_version} not found")
@@ -137,7 +179,7 @@ class ConfigLoader:
                 nodes.append(node)
 
         return RuleGraphConfig(
-            id=config_json.get("id", rule_graph_id),
+            id=config_json.get("id", config_id),
             version=config_json.get("version", rule_graph_version),
             nodes=nodes,
         )

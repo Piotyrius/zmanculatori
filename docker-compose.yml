@@ -1,7 +1,7 @@
 services:
   api:
+    build: .
     image: zmanculatori-api:latest
-    # build: .
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/garment_patterns
@@ -33,11 +33,20 @@ services:
       - POSTGRES_DB=garment_patterns
     ports:
       - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
 
   redis:
     image: redis:7
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  postgres_data:
+  redis_data:
+
 
 
 
